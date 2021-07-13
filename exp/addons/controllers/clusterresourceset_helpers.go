@@ -54,7 +54,17 @@ func isJSONList(data []byte) (bool, error) {
 	return bytes.HasPrefix(trim, jsonListPrefix), nil
 }
 
-func apply(ctx context.Context, c client.Client, data []byte) error {
+func applyTemplatesToObject(om metav1.ObjectMeta, data []byte) ([]byte, error) {
+	for k, v := range om.GetAnnotations() {
+		paramVariable := fmt.Sprintf("${annotations.%s}", k)
+		data = bytes.ReplaceAll(data, []byte(paramVariable), []byte(v))
+	}
+	return data, nil
+}
+
+func apply(ctx context.Context, cl *clusterv1.Cluster, c client.Client, data []byte) error {
+	data, err := applyTemplatesToObject(cl.ObjectMeta, data)
+
 	isJSONList, err := isJSONList(data)
 	if err != nil {
 		return err

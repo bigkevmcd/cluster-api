@@ -50,7 +50,6 @@ func TestClusterResourceSetReconciler(t *testing.T) {
 
 	setup := func(t *testing.T, g *WithT) *corev1.Namespace {
 		t.Helper()
-
 		clusterResourceSetName = fmt.Sprintf("clusterresourceset-%s", util.RandomString(6))
 		labels = map[string]string{clusterResourceSetName: "bar"}
 
@@ -64,7 +63,7 @@ func TestClusterResourceSetReconciler(t *testing.T) {
 		g.Expect(env.Create(ctx, testCluster)).To(Succeed())
 		t.Log("Creating the remote Cluster kubeconfig")
 		g.Expect(env.CreateKubeconfigSecret(ctx, testCluster)).To(Succeed())
-		testConfigmap := &corev1.ConfigMap{
+		testConfigmap = &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      configmapName,
 				Namespace: ns.Name,
@@ -588,4 +587,64 @@ metadata:
 			return false
 		}, timeout).Should(BeTrue())
 	})
+
+	t.Run("Should apply templating from the source cluster", func(t *testing.T) {
+		g := NewWithT(t)
+		setup(t, g)
+		defer teardown(t, g)
+
+		testConfigmap.Data = map[string]string{
+			"cm": `metadata:
+ name: templated-configmap
+ namespace: default
+kind: ConfigMap
+apiVersion: v1
+data:
+  testing: ${annotations.cluster.x-k8s.io/test-value}`,
+		}
+		t.Log("Updating ConfigMap with templated fields")
+		g.Expect(env.Update(ctx, testConfigmap)).To(Succeed())
+
+		t.Log("Updating the cluster with annotations")
+		testCluster.SetLabels(labels)
+		testCluster.SetAnnotations(map[string]string{
+			"cluster.x-k8s.io/test-value": "test-annotation-value",
+		})
+		g.Expect(env.Update(ctx, testCluster)).To(Succeed())
+
+		t.Log("Creating a ClusterResourceSet instance that has same labels as selector")
+		clusterResourceSetInstance := &addonsv1.ClusterResourceSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      clusterResourceSetName,
+				Namespace: defaultNamespaceName,
+			},
+			Spec: addonsv1.ClusterResourceSetSpec{
+				ClusterSelector: metav1.LabelSelector{
+					MatchLabels: labels,
+				},
+				Resources: []addonsv1.ResourceRef{{Name: configmapName, Kind: "ConfigMap"}},
+			},
+		}
+		// Create the ClusterResourceSet.
+		g.Expect(env.Create(ctx, clusterResourceSetInstance)).To(Succeed())
+
+		g.Eventually(func() bool {
+			var cfgMap corev1.ConfigMap
+			cfgMapKey := client.ObjectKey{
+				Name:      "templated-configmap",
+				Namespace: "default",
+			}
+			err := env.Get(ctx, cfgMapKey, &cfgMap)
+			if err != nil {
+				return false
+			}
+			if cfgMap.Data["testing"] != "test-annotation-value" {
+				return false
+			}
+			return true
+		}, timeout).Should(BeTrue())
+		t.Log("Deleting the Cluster")
+		g.Expect(env.Delete(ctx, testCluster)).To(Succeed())
+	})
+
 }
